@@ -43,19 +43,26 @@ export default function Settings(){
 //    return () => { sub.subscription.unsubscribe(); };
   })();},[]);
 
-const sendOtp = async () => {
+  const sendOtp = async () => {
   setSending(true);
+
+  // Always use a stable production origin for magic link redirects.
+  const base =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    (typeof window !== 'undefined' ? window.location.origin : '');
+
   const { error } = await s.auth.signInWithOtp({
     email: userEmail,
     options: {
-      emailRedirectTo: typeof window !== 'undefined'
-        ? `${window.location.origin}/auth/callback`
-        : undefined
+      emailRedirectTo: `${base}/auth/callback`
     }
   });
+
   setSending(false);
-  if (error) alert(error.message); else setSent(true);
+  if (error) alert(error.message);
+  else setSent(true);
 };
+
   
   const saveProfile = async () => {
     const { data: prof } = await s.from('profiles').select('id').single();
