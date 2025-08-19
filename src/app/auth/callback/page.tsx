@@ -1,48 +1,49 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+
+// Tell Next.js not to pre-render this page
+export const dynamic = 'force-dynamic'; // or: export const revalidate = 0;
 
 export default function AuthCallback() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [msg, setMsg] = useState('Signing you in…');
 
   useEffect(() => {
-    const run = async () => {
-      const s = supabase();
+    const s = supabase();
 
-      // 1) Handle the "token_hash" style links (type can be: magiclink | recovery | invite)
-      const token_hash = searchParams.get('token_hash');
-      const type = (searchParams.get('type') || 'magiclink') as
+    const run = async () => {
+      // Read params from the real browser URL (avoids useSearchParams + Suspense)
+      const url = new URL(window.location.href);
+      const token_hash = url.searchParams.get('token_hash');
+      const type = (url.searchParams.get('type') || 'magiclink') as
         'magiclink' | 'recovery' | 'invite' | 'signup' | 'email_change';
 
+      // Newer Supabase links: ?token_hash=...&type=magiclink
       if (token_hash) {
-        const { data, error } = await s.auth.verifyOtp({ type, token_hash });
+        const { error } = await s.auth.verifyOtp({ type, token_hash });
         if (error) {
-          setMsg(`Could not verify OTP (${error.message}). Try sending a new link.`);
+          setMsg(`Could not verify OTP (${error.message}). Try sending a new link and open it in the same browser as the app.`);
           return;
         }
-        // Success → go to settings
         router.replace('/settings');
         return;
       }
 
-      // 2) Handle older-style links with #access_token in URL hash
-      //    supabase-js v2 usually picks these up automatically on getSession()
+      // Older flow: #access_token=... (handled by getSession)
       const { data: { session } } = await s.auth.getSession();
       if (session) {
         router.replace('/settings');
         return;
       }
 
-      // 3) Still nothing? Show a helpful message.
-      setMsg('Still signing you in… If this page stays here, open the magic link in the same browser where the app is running (not an email app’s mini-browser).');
+      setMsg('Still signing you in… If this page stays here, open the link in the same browser where the app is running (not an email app’s mini-browser).');
     };
 
     run();
-  }, [router, searchParams]);
+  }, [router]);
 
   return <div className="p-4 text-sm">{msg}</div>;
 }
