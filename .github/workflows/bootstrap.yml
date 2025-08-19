@@ -1,0 +1,707 @@
+name: Bootstrap Habits Huntrix
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - .github/workflows/bootstrap.yml
+
+jobs:
+  build-repo:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create project files
+        run: |
+          set -eux
+
+          mkdir -p src/app src/app/dashboard src/app/settings src/components src/lib public/icons supabase/sql supabase/functions/award-streaks supabase/functions/weekly-email
+
+          cat > package.json <<'EOF'
+          {
+            "name": "habits-huntrix",
+            "version": "0.2.0",
+            "private": true,
+            "scripts": {
+              "dev": "next dev",
+              "build": "next build",
+              "start": "next start",
+              "lint": "eslint . --max-warnings=0",
+              "postinstall": "next telemetry disable || true"
+            },
+            "dependencies": {
+              "next": "14.2.4",
+              "react": "18.3.1",
+              "react-dom": "18.3.1",
+              "@supabase/supabase-js": "^2.45.4",
+              "@supabase/ssr": "^0.5.2",
+              "clsx": "^2.1.1",
+              "tailwind-merge": "^2.5.2",
+              "lucide-react": "^0.441.0"
+            },
+            "devDependencies": {
+              "typescript": "^5.5.4",
+              "@types/react": "^18.3.3",
+              "@types/node": "^20.14.10",
+              "eslint": "^8.57.0",
+              "eslint-config-next": "14.2.4",
+              "tailwindcss": "^3.4.10",
+              "postcss": "^8.4.41",
+              "autoprefixer": "^10.4.19"
+            }
+          }
+          EOF
+
+          cat > next.config.mjs <<'EOF'
+          /** @type {import('next').NextConfig} */
+          const nextConfig = { experimental: {} };
+          export default nextConfig
+          EOF
+
+          cat > tsconfig.json <<'EOF'
+          {
+            "compilerOptions": {
+              "target": "ES2020",
+              "lib": ["dom", "dom.iterable", "es2020"],
+              "skipLibCheck": true,
+              "strict": true,
+              "noEmit": true,
+              "esModuleInterop": true,
+              "module": "esnext",
+              "moduleResolution": "bundler",
+              "resolveJsonModule": true,
+              "isolatedModules": true,
+              "jsx": "preserve",
+              "incremental": true,
+              "baseUrl": ".",
+              "paths": { "@/*": ["./src/*"] }
+            },
+            "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx"],
+            "exclude": ["node_modules"]
+          }
+          EOF
+
+          cat > next-env.d.ts <<'EOF'
+          /// <reference types="next" />
+          /// <reference types="next/image-types/global" />
+          EOF
+
+          cat > postcss.config.js <<'EOF'
+          module.exports = { plugins: { tailwindcss: {}, autoprefixer: {} } };
+          EOF
+
+          cat > tailwind.config.ts <<'EOF'
+          import type { Config } from "tailwindcss";
+          const config: Config = {
+            content: ["./src/app/**/*.{ts,tsx}", "./src/components/**/*.{ts,tsx}"],
+            theme: { extend: {} },
+            plugins: [],
+          };
+          export default config;
+          EOF
+
+          cat > src/app/globals.css <<'EOF'
+          @tailwind base;
+          @tailwind components;
+          @tailwind utilities;
+
+          :root { --bg: #f9fafb; --text: #0a0a0a; }
+          html, body { background: var(--bg); color: var(--text); }
+          a { text-decoration: none; }
+          button { transition: transform .05s ease; }
+          button:active { transform: scale(0.98); }
+          EOF
+
+          cat > src/lib/supabaseClient.ts <<'EOF'
+          import { createBrowserClient } from '@supabase/ssr';
+          export const supabase = () => createBrowserClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+          );
+          EOF
+
+          cat > src/components/PWARegister.tsx <<'EOF'
+          'use client';
+          import { useEffect } from 'react';
+          export default function PWARegister(){
+            useEffect(()=>{
+              if('serviceWorker' in navigator){
+                window.addEventListener('load', ()=>{
+                  navigator.serviceWorker.register('/sw.js').catch(console.error);
+                });
+              }
+            },[]);
+            return null;
+          }
+          EOF
+
+          cat > src/app/layout.tsx <<'EOF'
+          import "./globals.css";
+          import PWARegister from "@/components/PWARegister";
+
+          export const metadata = {
+            title: "Habits Huntrix",
+            description: "Kid-friendly habit tracker",
+          };
+
+          export default function RootLayout({ children }: { children: React.ReactNode }) {
+            return (
+              <html lang="en">
+                <body className="min-h-screen bg-[#f9fafb] text-neutral-900">
+                  <PWARegister />
+                  <div className="mx-auto max-w-md p-3 pb-20">{children}</div>
+                  <nav className="fixed bottom-0 left-0 right-0 mx-auto max-w-md border-t bg-white/90 backdrop-blur">
+                    <div className="grid grid-cols-3 text-center">
+                      <a className="p-3 block" href="/">Check-in</a>
+                      <a className="p-3 block" href="/dashboard">Dashboard</a>
+                      <a className="p-3 block" href="/settings">Settings</a>
+                    </div>
+                  </nav>
+                </body>
+              </html>
+            );
+          }
+          EOF
+
+          cat > src/app/page.tsx <<'EOF'
+          'use client';
+          import { useEffect, useState } from 'react';
+          import { supabase } from '@/lib/supabaseClient';
+
+          type Habit = { id: string; name: string };
+          type Status = 'yes' | 'no' | 'exception';
+
+          export default function CheckinPage(){
+            const [habits, setHabits] = useState<Habit[]>([]);
+            const [today, setToday] = useState<string>('');
+            const s = supabase();
+
+            useEffect(()=>{
+              const t = new Date();
+              setToday(t.toISOString().slice(0,10));
+              (async()=>{
+                const { data: prof } = await s.from('profiles').select('id').single();
+                if(!prof) return;
+                const { data } = await s.from('habits').select('id,name').eq('user_id', prof.id).eq('is_active', true).order('sort_order');
+                setHabits(data||[]);
+              })();
+            },[]);
+
+            const setStatus = async (habit_id: string, status: Status) => {
+              const { data: prof } = await s.from('profiles').select('id').single();
+              if(!prof) return alert('Please sign in via OTP first (Settings tab).');
+              const payload = { user_id: prof!.id, habit_id, log_date: today, status };
+              await s.from('habit_logs').upsert(payload, { onConflict: 'user_id,habit_id,log_date' });
+              alert('Saved!');
+            };
+
+            return (
+              <div>
+                <h1 className="text-2xl font-semibold mb-2">Daily Check-in</h1>
+                <p className="mb-4 text-sm">{today}</p>
+                <div className="space-y-3">
+                  {habits.map(h => (
+                    <div key={h.id} className="rounded-2xl border p-3 bg-white">
+                      <div className="font-medium mb-2">{h.name}</div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button onClick={()=>setStatus(h.id,'yes')} className="rounded-xl bg-emerald-100 px-3 py-2">Yes (+20)</button>
+                        <button onClick={()=>setStatus(h.id,'exception')} className="rounded-xl bg-amber-100 px-3 py-2">Exception (+10)</button>
+                        <button onClick={()=>setStatus(h.id,'no')} className="rounded-xl bg-rose-100 px-3 py-2">No (0)</button>
+                      </div>
+                    </div>
+                  ))}
+                  {habits.length===0 && (
+                    <div className="text-sm text-neutral-600">No habits yet. Go to <b>Settings</b> to add some.</div>
+                  )}
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          cat > src/app/dashboard/page.tsx <<'EOF'
+          'use client';
+          import { useEffect, useState } from 'react';
+          import { supabase } from '@/lib/supabaseClient';
+
+          export default function Dashboard(){
+            const s = supabase();
+            const [weekPoints, setWeekPoints] = useState<number>(0);
+            const [byHabit, setByHabit] = useState<any[]>([]);
+
+            useEffect(()=>{(async()=>{
+              const { data: prof } = await s.from('profiles').select('id').single();
+              if(!prof) return;
+              const today = new Date();
+              const end = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+              const start = new Date(end); start.setDate(end.getDate()-6);
+              const ds = (d: Date) => d.toISOString().slice(0,10);
+
+              const { data: habits } = await s.from('habits').select('id,name').eq('user_id', prof!.id).eq('is_active', true).order('sort_order');
+
+              let total = 0; const rows: any[] = [];
+              for (const h of habits||[]) {
+                const { data: logs } = await s
+                  .from('habit_logs')
+                  .select('status,points')
+                  .eq('user_id', prof!.id).eq('habit_id', h.id)
+                  .gte('log_date', ds(start)).lte('log_date', ds(end));
+                const yes = logs?.filter(l=>l.status==='yes').length||0;
+                const exc = logs?.filter(l=>l.status==='exception').length||0;
+                const pts = logs?.reduce((s,l)=>s+(l.points||0),0)||0; total += pts;
+                rows.push({ name: h.name, yes, exc, pts });
+              }
+
+              const { data: bonus } = await s
+                .from('points_ledger')
+                .select('amount')
+                .eq('user_id', prof!.id)
+                .gte('created_at', start.toISOString())
+                .lte('created_at', new Date(end.getTime()+24*3600*1000).toISOString());
+              total += (bonus||[]).reduce((s,b)=>s+b.amount,0);
+
+              setWeekPoints(total); setByHabit(rows);
+            })();},[]);
+
+            return (
+              <div>
+                <h1 className="text-2xl font-semibold mb-4">Progress</h1>
+                <div className="rounded-2xl border bg-white p-4 mb-4">
+                  <div className="text-sm text-neutral-500">This week</div>
+                  <div className="text-3xl font-bold">{weekPoints} pts</div>
+                </div>
+                <div className="space-y-3">
+                  {byHabit.map(h => (
+                    <div key={h.name} className="rounded-2xl border bg-white p-3">
+                      <div className="font-medium">{h.name}</div>
+                      <div className="text-sm">Yes: {h.yes} • Exception: {h.exc} • Points: {h.pts}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          cat > src/app/settings/page.tsx <<'EOF'
+          'use client';
+          import { useEffect, useState } from 'react';
+          import { supabase } from '@/lib/supabaseClient';
+
+          export default function Settings(){
+            const s = supabase();
+            const [nickname, setNickname] = useState('');
+            const [email, setEmail] = useState('');
+            const [habits, setHabits] = useState<any[]>([]);
+            const [userEmail, setUserEmail] = useState('');
+            const [signedIn, setSignedIn] = useState<boolean>(false);
+            const [sending, setSending] = useState(false);
+            const [sent, setSent] = useState(false);
+
+            useEffect(()=>{(async()=>{
+              const { data: userRes } = await s.auth.getUser();
+              if (userRes?.user) {
+                setSignedIn(true);
+                const { data: profile } = await s.from('profiles').select('id,email,nickname').eq('id', userRes.user.id).single();
+                if (!profile) {
+                  await s.from('profiles').insert({ id: userRes.user.id, email: userRes.user.email, nickname: 'Kiddo' });
+                  await s.from('app_settings').insert({ user_id: userRes.user.id });
+                  const defaults = [
+                    'Getting ready for school on time',
+                    'Sleep on time',
+                    'High-quality brushing',
+                    'High-quality bath',
+                    'Do one good thing',
+                    'Show respect to elders',
+                  ];
+                  await s.from('habits').insert(defaults.map((name, i)=>({ user_id: userRes.user.id, name, sort_order: i+1 })));
+                }
+                const { data: prof } = await s.from('profiles').select('id,email,nickname').single();
+                if(prof){ setNickname(prof.nickname||''); setEmail(prof.email||''); }
+                const { data: hs } = await s.from('habits').select('id,name,is_active,sort_order').order('sort_order');
+                setHabits(hs||[]);
+              } else {
+                setSignedIn(false);
+              }
+              const { data: sub } = s.auth.onAuthStateChange((_event, session)=>{
+                if(session?.user){ location.reload(); }
+              });
+              return () => { sub.subscription.unsubscribe(); };
+            })();},[]);
+
+            const sendOtp = async () => {
+              setSending(true);
+              const { error } = await s.auth.signInWithOtp({
+                email: userEmail,
+                options: { emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined }
+              });
+              setSending(false);
+              if(error) alert(error.message); else setSent(true);
+            };
+
+            const saveProfile = async () => {
+              const { data: prof } = await s.from('profiles').select('id').single();
+              if(!prof) return alert('Please sign in first.');
+              await s.from('profiles').update({ nickname }).eq('id', prof!.id);
+              alert('Saved');
+            };
+            const addHabit = async () => {
+              const { data: prof } = await s.from('profiles').select('id').single();
+              if(!prof) return;
+              await s.from('habits').insert({ user_id: prof!.id, name: 'New habit', sort_order: (habits?.length||0)+1 });
+              location.reload();
+            };
+
+            if(!signedIn){
+              return (
+                <div>
+                  <h1 className="text-2xl font-semibold mb-4">Settings</h1>
+                  <div className="rounded-2xl border bg-white p-4">
+                    <div className="font-medium mb-2">Sign in</div>
+                    <p className="text-sm text-neutral-600 mb-3">Enter your email to receive a one-time magic link.</p>
+                    <input className="w-full rounded-xl border p-2 mb-2" type="email" placeholder="you@example.com" value={userEmail} onChange={(e)=>setUserEmail(e.target.value)} />
+                    <button disabled={sending || !userEmail} onClick={sendOtp} className="rounded-xl bg-blue-100 px-3 py-2">{sending ? 'Sending...' : 'Send OTP link'}</button>
+                    {sent && <div className="text-sm text-emerald-700 mt-2">Check your email and open the link on this device.</div>}
+                  </div>
+                </div>
+              );
+            }
+
+            return (
+              <div>
+                <h1 className="text-2xl font-semibold mb-4">Settings</h1>
+                <div className="space-y-4">
+                  <div className="rounded-2xl border bg-white p-4">
+                    <div className="font-medium mb-2">Profile</div>
+                    <input className="w-full rounded-xl border p-2 mb-2" value={nickname} onChange={e=>setNickname(e.target.value)} placeholder="Nickname"/>
+                    <div className="text-xs text-neutral-500">Login email: {email || '—'}</div>
+                    <button onClick={saveProfile} className="mt-2 rounded-xl bg-blue-100 px-3 py-2">Save</button>
+                  </div>
+
+                  <div className="rounded-2xl border bg-white p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="font-medium">Habits</div>
+                      <button onClick={addHabit} className="rounded-xl bg-green-100 px-3 py-1">+ Add</button>
+                    </div>
+                    <div className="space-y-2">
+                      {habits.map(h => (
+                        <div key={h.id} className="flex items-center gap-2">
+                          <input className="flex-1 rounded-xl border p-2" defaultValue={h.name} onBlur={async (e)=>{
+                            await s.from('habits').update({ name: e.target.value }).eq('id', h.id);
+                          }}/>
+                          <label className="text-sm flex items-center gap-2">
+                            Active <input type="checkbox" defaultChecked={h.is_active} onChange={async(ev)=>{
+                              await s.from('habits').update({ is_active: (ev.target as HTMLInputElement).checked }).eq('id', h.id);
+                            }}/>
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          EOF
+
+          cat > public/manifest.json <<'EOF'
+          {
+            "name": "Habits Huntrix",
+            "short_name": "Huntrix",
+            "display": "standalone",
+            "start_url": "/",
+            "background_color": "#fafafa",
+            "theme_color": "#f2e9e4",
+            "icons": [
+              {"src": "/icons/icon-192.png", "sizes":"192x192", "type":"image/png"},
+              {"src": "/icons/icon-512.png", "sizes":"512x512", "type":"image/png"}
+            ]
+          }
+          EOF
+
+          cat > public/sw.js <<'EOF'
+          self.addEventListener('install',e=>self.skipWaiting());
+          self.addEventListener('activate',e=>self.clients.claim());
+          self.addEventListener('fetch',e=>{
+            e.respondWith((async()=>{
+              try { return await fetch(e.request); } catch { return caches.match('/'); }
+            })());
+          });
+          EOF
+
+          cat > public/robots.txt <<'EOF'
+          User-agent: *
+          Disallow:
+          EOF
+
+          cat > supabase/sql/schema.sql <<'EOF'
+          -- =========================
+          -- Habits Huntrix: Schema & Policies
+          -- =========================
+
+          create extension if not exists pgcrypto;
+
+          create type habit_status as enum ('yes','no','exception');
+
+          create table if not exists profiles (
+            id uuid primary key references auth.users(id) on delete cascade,
+            email text unique,
+            nickname text,
+            created_at timestamptz default now()
+          );
+
+          create table if not exists habits (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references profiles(id) on delete cascade,
+            name text not null,
+            is_active boolean not null default true,
+            sort_order int default 0,
+            created_at timestamptz default now()
+          );
+          create index if not exists habits_user_idx on habits(user_id);
+
+          create table if not exists habit_logs (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references profiles(id) on delete cascade,
+            habit_id uuid not null references habits(id) on delete cascade,
+            log_date date not null,
+            status habit_status not null,
+            points int not null default 0,
+            note text,
+            created_at timestamptz default now(),
+            unique(user_id, habit_id, log_date)
+          );
+          create index if not exists habit_logs_user_date_idx on habit_logs(user_id, log_date);
+
+          create table if not exists points_ledger (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references profiles(id) on delete cascade,
+            source text not null check (source in ('habit','streak7','manual')),
+            related_habit uuid references habits(id) on delete set null,
+            amount int not null,
+            meta jsonb,
+            awarded_for_date date,
+            created_at timestamptz default now()
+          );
+          create index if not exists points_ledger_user_idx on points_ledger(user_id, created_at);
+
+          create table if not exists streak_awards (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references profiles(id) on delete cascade,
+            habit_id uuid not null references habits(id) on delete cascade,
+            streak_end_date date not null,
+            created_at timestamptz default now(),
+            unique(user_id, habit_id, streak_end_date)
+          );
+
+          create table if not exists reminders (
+            id uuid primary key default gen_random_uuid(),
+            user_id uuid not null references profiles(id) on delete cascade,
+            habit_id uuid references habits(id) on delete cascade,
+            channel text not null check (channel in ('email','push')),
+            time_local time not null,
+            days smallint[] not null default '{1,2,3,4,5,6,0}',
+            enabled boolean not null default true,
+            created_at timestamptz default now()
+          );
+          create index if not exists reminders_user_idx on reminders(user_id);
+
+          create table if not exists app_settings (
+            user_id uuid primary key references profiles(id) on delete cascade,
+            weekly_email_enabled boolean not null default true,
+            timezone text not null default 'Asia/Kolkata'
+          );
+
+          alter table profiles enable row level security;
+          alter table habits enable row level security;
+          alter table habit_logs enable row level security;
+          alter table points_ledger enable row level security;
+          alter table streak_awards enable row level security;
+          alter table reminders enable row level security;
+          alter table app_settings enable row level security;
+
+          create policy select_own_profile on profiles for select using (id = auth.uid());
+          create policy update_own_profile on profiles for update using (id = auth.uid());
+
+          create policy crud_own_habits on habits for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+          create policy crud_own_logs on habit_logs for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+          create policy crud_own_points on points_ledger for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+          create policy crud_own_streak_awards on streak_awards for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+          create policy crud_own_reminders on reminders for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+          create policy crud_own_settings on app_settings for all using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+          create or replace function set_log_points()
+          returns trigger as $$
+          begin
+            new.points := case new.status
+              when 'yes' then 20
+              when 'exception' then 10
+              else 0
+            end;
+            return new;
+          end; $$ language plpgsql;
+
+          drop trigger if exists habit_logs_points_trg on habit_logs;
+          create trigger habit_logs_points_trg
+          before insert or update of status on habit_logs
+          for each row execute function set_log_points();
+
+          -- Optional seed block (uncomment to run once)
+          -- insert into app_settings (user_id) select id from profiles on conflict (user_id) do nothing;
+          -- insert into habits (user_id, name, sort_order) select id, 'Getting ready for school on time', 1 from profiles;
+          -- insert into habits (user_id, name, sort_order) select id, 'Sleep on time', 2 from profiles;
+          -- insert into habits (user_id, name, sort_order) select id, 'High-quality brushing', 3 from profiles;
+          -- insert into habits (user_id, name, sort_order) select id, 'High-quality bath', 4 from profiles;
+          -- insert into habits (user_id, name, sort_order) select id, 'Do one good thing', 5 from profiles;
+          -- insert into habits (user_id, name, sort_order) select id, 'Show respect to elders', 6 from profiles;
+          EOF
+
+          cat > supabase/functions/award-streaks/index.ts <<'EOF'
+          /**
+           * Supabase Edge Function: award-streaks
+           * Awards +200 points for any habit with a 7-day YES streak ending yesterday.
+           */
+          import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+          export async function main(req: Request): Promise<Response> {
+            const url = Deno.env.get("SUPABASE_URL")!;
+            const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+            const supabase = createClient(url, key);
+
+            const { data: profiles } = await supabase.from('profiles').select('id').limit(1);
+            const userId = profiles?.[0]?.id;
+            if (!userId) return new Response("No profile", { status: 200 });
+
+            const { data: habits } = await supabase.from('habits').select('id').eq('user_id', userId).eq('is_active', true);
+            if (!habits) return new Response("No habits", { status: 200 });
+
+            const today = new Date();
+            const y = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() - 1));
+            const dstr = (d: Date) => d.toISOString().slice(0,10);
+
+            for (const h of habits) {
+              const start = new Date(y); start.setUTCDate(y.getUTCDate() - 6);
+              const { data: logs } = await supabase
+                .from('habit_logs')
+                .select('log_date,status')
+                .eq('user_id', userId).eq('habit_id', h.id)
+                .gte('log_date', dstr(start)).lte('log_date', dstr(y))
+                .order('log_date', { ascending: true });
+
+              if (!logs || logs.length < 7) continue;
+              const allYes = logs.every(l => l.status === 'yes');
+              if (!allYes) continue;
+
+              const endDate = dstr(y);
+              const { data: exists } = await supabase
+                .from('streak_awards')
+                .select('id').eq('user_id', userId).eq('habit_id', h.id).eq('streak_end_date', endDate).limit(1);
+
+              if (exists && exists.length) continue;
+
+              await supabase.from('streak_awards').insert({ user_id: userId, habit_id: h.id, streak_end_date: endDate });
+              await supabase.from('points_ledger').insert({ user_id: userId, source: 'streak7', related_habit: h.id, amount: 200, awarded_for_date: endDate });
+            }
+
+            return new Response("ok", { status: 200 });
+          }
+          EOF
+
+          cat > supabase/functions/weekly-email/index.ts <<'EOF'
+          /**
+           * Supabase Edge Function: weekly-email
+           * Computes weekly summary and queues an email (replace with your email provider call).
+           */
+          import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+          function ds(d: Date){ return d.toISOString().slice(0,10); }
+
+          export async function main(req: Request): Promise<Response> {
+            const url = Deno.env.get("SUPABASE_URL")!;
+            const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+            const supabase = createClient(url, key);
+
+            const { data: profile } = await supabase.from('profiles').select('id,email,nickname').single();
+            if (!profile) return new Response("no profile", { status: 200 });
+
+            const { data: settings } = await supabase.from('app_settings').select('weekly_email_enabled, timezone').eq('user_id', profile.id).single();
+            if (!settings?.weekly_email_enabled) return new Response("disabled", { status: 200 });
+
+            const now = new Date();
+            const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+            const start = new Date(end); start.setUTCDate(end.getUTCDate() - 6);
+
+            const { data: habits } = await supabase.from('habits').select('id,name').eq('user_id', profile.id).eq('is_active', true).order('sort_order');
+
+            let totalPoints = 0;
+            const byHabit: any[] = [];
+
+            for (const h of (habits||[])) {
+              const { data: logs } = await supabase
+                .from('habit_logs')
+                .select('status,points')
+                .eq('user_id', profile.id).eq('habit_id', h.id)
+                .gte('log_date', ds(start)).lte('log_date', ds(end));
+
+              const yes = (logs||[]).filter(l=>l.status==='yes').length;
+              const exc = (logs||[]).filter(l=>l.status==='exception').length;
+              const pts = (logs||[]).reduce((s,l)=>s+(l.points||0),0);
+              totalPoints += pts;
+              byHabit.push({ name: h.name, yes, exc, completed: yes+exc, days: 7 });
+            }
+
+            const { data: bonus } = await supabase
+              .from('points_ledger').select('amount')
+              .eq('user_id', profile.id)
+              .gte('created_at', start.toISOString())
+              .lte('created_at', new Date(end.getTime()+24*3600*1000).toISOString());
+            totalPoints += (bonus||[]).reduce((s,b)=>s+b.amount,0);
+
+            await supabase.from('points_ledger').insert({
+              user_id: profile.id,
+              source: 'manual',
+              amount: 0,
+              meta: { type: 'weekly_email_queued', to: profile.email, summary: { totalPoints, byHabit } }
+            });
+
+            return new Response("queued", { status: 200 });
+          }
+          EOF
+
+          cat > .env.example <<'EOF'
+          NEXT_PUBLIC_SUPABASE_URL=
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=
+          EOF
+
+          cat > README.md <<'EOF'
+          # Habits Huntrix (PWA) — Starter
+
+          Kid-friendly habit tracker (single parent account via email OTP), with points (+20/ +10 / 0), optional +200 seven-day streak bonus, and a PWA UI.
+
+          ## Local dev
+          1) Create a Supabase project → copy Project URL + anon key
+          2) Copy .env.example → .env.local and paste values
+          3) npm install && npm run dev
+          4) Visit http://localhost:3000 and sign in from Settings (magic link)
+
+          ## Deploy
+          - Import this repo into Vercel
+          - Add env vars on Vercel:
+            - NEXT_PUBLIC_SUPABASE_URL
+            - NEXT_PUBLIC_SUPABASE_ANON_KEY
+          - Open on your phone → Add to Home Screen (PWA)
+
+          ## Database
+          In Supabase SQL Editor, run: supabase/sql/schema.sql
+          EOF
+
+      - name: Commit files
+        run: |
+          set -eux
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Bootstrap project [skip ci]" || echo "Nothing to commit"
+          git push
