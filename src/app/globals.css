@@ -1,0 +1,9 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --bg: #f9fafb; --text: #0a0a0a; }
+html, body { background: var(--bg); color: var(--text); }
+a { text-decoration: none; }
+button { transition: transform .05s ease; }
+button:active { transform: scale(0.98); }
