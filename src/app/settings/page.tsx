@@ -37,10 +37,10 @@ export default function Settings(){
     } else {
       setSignedIn(false);
     }
-    const { data: sub } = s.auth.onAuthStateChange((_event, session)=>{
-      if(session?.user){ location.reload(); }
-    });
-    return () => { sub.subscription.unsubscribe(); };
+//    const { data: sub } = s.auth.onAuthStateChange((_event, session)=>{
+//      if(session?.user){ location.reload(); }
+//    });
+//    return () => { sub.subscription.unsubscribe(); };
   })();},[]);
 
 const sendOtp = async () => {
