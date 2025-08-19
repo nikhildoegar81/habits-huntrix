@@ -43,16 +43,20 @@ export default function Settings(){
     return () => { sub.subscription.unsubscribe(); };
   })();},[]);
 
-  const sendOtp = async () => {
-    setSending(true);
-    const { error } = await s.auth.signInWithOtp({
-      email: userEmail,
-      options: { emailRedirectTo: typeof window !== 'undefined' ? window.location.origin : undefined }
-    });
-    setSending(false);
-    if(error) alert(error.message); else setSent(true);
-  };
-
+const sendOtp = async () => {
+  setSending(true);
+  const { error } = await s.auth.signInWithOtp({
+    email: userEmail,
+    options: {
+      emailRedirectTo: typeof window !== 'undefined'
+        ? `${window.location.origin}/auth/callback`
+        : undefined
+    }
+  });
+  setSending(false);
+  if (error) alert(error.message); else setSent(true);
+};
+  
   const saveProfile = async () => {
     const { data: prof } = await s.from('profiles').select('id').single();
     if(!prof) return alert('Please sign in first.');
